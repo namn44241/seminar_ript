@@ -1,0 +1,1246 @@
+# File structure:
+# library_management/
+# ├── __init__.py
+# ├── __manifest__.py
+# ├── models/
+# │   ├── __init__.py
+# │   ├── library.py
+# │   ├── tags.py
+# │   ├── subtopic.py
+# │   ├── ebook.py
+# │   └── history.py
+# ├── views/
+# │   └── library_views.xml
+# │   └── subtopic_views.xml
+# │   └── book_search_view.xml
+# │   └── ebook_views.xml
+# ├── security/
+# │   └── ir.model.access.csv
+# ├── reports/
+# │   ├── __init__.py
+# │   ├── book_report.py
+# │   └── book_report_template.xml
+# └── static/
+#     └── src/
+#         └── components/
+		└── dashboard/
+#             		└── book_dashboard.js
+	      		└── book_dashboard.xml
+
+#views/ebook_views.xml
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_library_ebook_form" model="ir.ui.view">
+        <field name="name">library.ebook.form</field>
+        <field name="model">library.ebook</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="book_id" domain="[('state','=','available')]"/>
+                            <!-- Các trường kế thừa từ book -->
+                            <field name="name"/>
+                            <field name="author"/>
+                            <field name="isbn"/>
+                        </group>
+                        <group>
+                            <field name="file_url"/>
+                            <field name="file_size"/>
+                            <field name="format"/>
+                        </group>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_library_ebook" model="ir.actions.act_window">
+        <field name="name">E-Books</field>
+        <field name="res_model">library.ebook</field>
+        <field name="view_mode">tree,form</field>
+    </record>
+
+</odoo>
+
+#models/ebook.py
+from odoo import models, fields, api
+from odoo.exceptions import UserError
+from odoo.exceptions import ValidationError
+
+
+class Ebook(models.Model):
+    _name = 'library.ebook'
+    _description = 'E-Book'
+    _inherits = {'library.book': 'book_id'}
+
+    book_id = fields.Many2one(
+        'library.book',
+        required=True,
+        ondelete='cascade'
+    )
+    file_url = fields.Char('Download URL')
+    file_size = fields.Float('File Size (MB)')
+    format = fields.Selection([
+        ('pdf', 'PDF'),
+        ('epub', 'EPUB'),
+        ('mobi', 'MOBI')
+    ], string='Format')
+
+
+#views/book_search_view.xml
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_library_book_search_inherit" model="ir.ui.view">
+        <field name="name">library.book.search.inherit</field>
+        <field name="model">library.book</field>
+        <field name="inherit_id" ref="library_management.view_library_book_search"/>
+        <field name="arch" type="xml">
+            <search>
+                <field name="isbn"/>
+                <filter name="available" string="Available" domain="[('state','=','available')]"/>
+                <filter name="borrowed" string="Borrowed" domain="[('state','=','borrowed')]"/>
+            </search>
+        </field>
+    </record>
+</odoo>
+
+
+# models/library.py
+from odoo import models, fields, api
+from odoo.exceptions import UserError
+from odoo.exceptions import ValidationError
+
+class Book(models.Model):
+    _name = 'library.book'
+    _description = 'Library Book'
+    _inherit = ['mail.thread', 'mail.activity.mixin']
+
+    name = fields.Char('Title', required=True)
+    author = fields.Char('Author', required=True)
+    isbn = fields.Char('Mã sách')
+    state = fields.Selection([
+        ('available', 'Available'),
+        ('borrowed', 'Borrowed'),
+    ], default='available', tracking=True)
+    description = fields.Text('Description')
+    cover_url = fields.Char('Book Cover URL')
+
+    active = fields.Boolean(default=True)
+    color = fields.Integer('Color Index')
+    tag_ids = fields.Many2many('library.book.tag', string='Tags')
+    copies_count = fields.Integer('Number of Copies', default=1)
+    borrow_history_ids = fields.One2many('library.book.history', 'book_id', string='Borrow History')
+
+    subtopic_ids = fields.One2many(
+        'library.book.subtopic',
+        'book_id',
+        string='Subtopics'
+    )
+    subtopic_count = fields.Integer(
+        'Number of Subtopics',
+        compute='_compute_subtopic_count'
+    )
+
+    @api.depends('subtopic_ids')
+    def _compute_subtopic_count(self):
+        for record in self:
+            record.subtopic_count = len(record.subtopic_ids)
+
+    def action_mark_borrowed(self):
+        for book in self:
+            if book.state == 'available':
+                book.state = 'borrowed'
+            # else:
+            #     raise UserError('Book is already borrowed!')
+
+    def action_mark_available(self):
+        for book in self:
+            if book.state == 'borrowed':
+                book.state = 'available'
+            # else:
+            #     raise UserError('Book is already available!')
+
+    # Domain Constraint: Cho phép mở trang web chỉ khi có ISBN
+    def action_open_website(self):
+        self.ensure_one()
+        if not self.isbn:
+            raise ValidationError("Không thể mở trang web do thiếu mã mã sách")
+        return {
+            'type': 'ir.actions.act_url',
+            'url': f'https://www.goodreads.com/search?q={self.isbn}',
+            'target': 'new'
+        }
+
+    # Python Constraint: Kiểm tra độ dài ISBN
+    @api.constrains('isbn')
+    def _check_isbn_length(self):
+        for record in self:
+            if record.isbn and len(record.isbn.replace('-', '')) != 13:
+                raise ValidationError("Mã sách phải có đúng 13 chữ số (không tính dấu gạch ngang)")
+
+    # Python Constraint: Kiểm tra tính duy nhất của ISBN
+    @api.constrains('isbn')
+    def _check_unique_isbn(self):
+        for record in self:
+            if record.isbn:
+                existing_books = self.search([
+                    ('id', '!=', record.id),
+                    ('isbn', '=', record.isbn)
+                ])
+                if existing_books:
+                    raise ValidationError(f"Mã sách {record.isbn} đã tồn tại ở một cuốn sách khác")
+
+    # Python Constraint: Kiểm tra tên sách không quá ngắn
+    @api.constrains('name')
+    def _check_book_name_length(self):
+        for record in self:
+            if len(record.name.strip()) < 3:
+                raise ValidationError("Tên sách phải có ít nhất 3 ký tự")
+
+    # SQL Constraint: Đảm bảo ISBN là duy nhất
+    _sql_constraints = [
+        ('unique_isbn', 'unique(isbn)', 'Mã sách phải là duy nhất'),
+    ]
+
+    def action_view_subtopics(self):
+        self.ensure_one()
+        action = {
+            'name': 'Book Subtopics',
+            'type': 'ir.actions.act_window',
+            'res_model': 'library.book.subtopic',
+            'view_mode': 'tree,form',
+            'domain': [('book_id', '=', self.id)],
+            'context': {
+                'default_book_id': self.id,
+                'search_default_group_by_parent': 1
+            }
+        }
+        return action
+
+# security/ir.model.access.csv
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_library_book_user,library.book.user,model_library_book,base.group_user,1,1,1,1
+access_library_book_tag_user,library.book.tag.user,model_library_book_tag,base.group_user,1,1,1,1
+access_library_book_history_user,library.book.history.user,model_library_book_history,base.group_user,1,1,1,1
+access_library_book_subtopic_user,library.book.subtopic.user,model_library_book_subtopic,base.group_user,1,1,1,1
+access_library_ebook_user,library.ebook.user,model_library_ebook,base.group_user,1,1,1,1
+
+
+# views/library_views.xml
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Window Action -->
+    <record id="action_library_book" model="ir.actions.act_window">
+        <field name="name">Library Books</field>
+        <field name="res_model">library.book</field>
+        <field name="view_mode">tree,form,kanban</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                Create your first book!
+            </p>
+        </field>
+    </record>
+
+    <!-- Server Action -->
+    <record id="action_mark_all_available" model="ir.actions.server">
+        <field name="name">Mark All as Available</field>
+        <field name="model_id" ref="model_library_book"/>
+        <field name="binding_model_id" ref="model_library_book"/>
+        <field name="state">code</field>
+        <field name="code">
+records.action_mark_available()
+        </field>
+    </record>
+
+        <record id="action_mark_all_borrow" model="ir.actions.server">
+            <field name="name">Mark All as Borrow</field>
+            <field name="model_id" ref="model_library_book"/>
+            <field name="binding_model_id" ref="model_library_book"/>
+            <field name="state">code</field>
+            <field name="code">
+    records.action_mark_borrowed()
+            </field>
+        </record>
+
+    <!-- Client Action -->
+    <record id="action_book_dashboard" model="ir.actions.client">
+        <field name="name">Book Dashboard</field>
+        <field name="tag">library_book_dashboard</field>
+    </record>
+
+    <!-- Form View -->
+    <record id="view_library_book_form" model="ir.ui.view">
+        <field name="name">library.book.form</field>
+        <field name="model">library.book</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <!-- Sử dụng invisible thay vì attrs -->
+                    <button name="action_mark_borrowed"
+                            string="Mark as Borrowed"
+                            type="object"
+                            class="oe_highlight"
+                            invisible="state == 'borrowed'"/>
+                    <button name="action_mark_available"
+                            string="Mark as Available"
+                            type="object"
+                            class="oe_highlight"
+                            invisible="state == 'available'"/>
+                    <button name="action_open_website"
+                            string="View on Goodreads"
+                            type="object"
+                            icon="fa-external-link"/>
+                    <field name="state" widget="statusbar"/>
+                </header>
+                <sheet>
+                    <!-- Sử dụng invisible trực tiếp -->
+                    <widget name="web_ribbon"
+                            title="Borrowed"
+                            bg_color="bg-warning"
+                            invisible="state != 'borrowed'"/>
+
+                    <!-- Button Box -->
+                    <div class="oe_button_box" name="button_box">
+                        <button name="toggle_active"
+                                type="object"
+                                class="oe_stat_button"
+                                icon="fa-archive">
+                            <field name="active" widget="boolean_button"/>
+                        </button>
+                    </div>
+
+                    <button name="action_view_subtopics"
+                            type="object"
+                            class="oe_stat_button"
+                            icon="fa-sitemap">
+                        <field name="subtopic_count" widget="statinfo" string="Subtopics"/>
+                    </button>
+
+                    <!-- Avatar và Cover Image -->
+                    <field name="cover_url" widget="image" class="oe_avatar"/>
+
+                    <!-- Tiêu đề -->
+                    <div class="oe_title">
+                        <h1>
+                            <field name="name" placeholder="Book Title..."/>
+                        </h1>
+                        <h3>
+                            <field name="author" placeholder="Author Name..." class="text-muted"/>
+                        </h3>
+                    </div>
+
+                    <!-- Thông tin chính -->
+                    <group>
+                        <group>
+                            <field name="isbn" placeholder="Enter 13-digit ISBN..."/>
+                            <field name="copies_count" string="Copies Available"/>
+                        </group>
+                        <group>
+                            <field name="tag_ids" widget="many2many_tags"/>
+                        </group>
+                    </group>
+
+                    <!-- Tabs -->
+                    <notebook>
+                        <page string="Description" name="description">
+                            <field name="description" widget="html"/>
+                        </page>
+                        <page string="History" name="history">
+                            <field name="borrow_history_ids">
+                                <tree>
+                                    <field name="borrow_date"/>
+                                    <field name="return_date"/>
+                                    <field name="borrower_id"/>
+                                    <field name="state" widget="badge"/>
+                                </tree>
+                            </field>
+                        </page>
+                        <page string="Subtopics" name="subtopics">
+                            <field name="subtopic_ids" context="{'default_book_id': active_id}">
+                                <tree>
+                                    <field name="sequence" widget="handle"/>
+                                    <field name="complete_name"/>
+                                    <field name="is_folder"/>
+                                    <field name="child_count"/>
+                                </tree>
+                            </field>
+                        </page>
+                    </notebook>
+                </sheet>
+                <!-- Chatter -->
+                <div class="oe_chatter">
+                    <field name="message_follower_ids"/>
+                    <field name="activity_ids"/>
+                    <field name="message_ids"/>
+                </div>
+            </form>
+        </field>
+    </record>
+
+    <!-- Tree View -->
+    <record id="view_library_book_tree" model="ir.ui.view">
+        <field name="name">library.book.tree</field>
+        <field name="model">library.book</field>
+        <field name="arch" type="xml">
+            <tree>
+                <field name="name"/>
+                <field name="author"/>
+                <field name="isbn"/>
+                <field name="state"/>
+            </tree>
+        </field>
+    </record>
+
+    <!-- Kanban View -->
+    <record id="view_library_book_kanban" model="ir.ui.view">
+        <field name="name">library.book.kanban</field>
+        <field name="model">library.book</field>
+        <field name="arch" type="xml">
+            <kanban default_group_by="state" class="o_kanban_small_column">
+                <field name="id"/>
+                <field name="name"/>
+                <field name="author"/>
+                <field name="state"/>
+                <field name="cover_url"/>
+                <field name="color"/>
+                <templates>
+                    <t t-name="kanban-box">
+                        <div class="oe_kanban_global_click">
+                            <div class="o_kanban_image">
+                                <field name="cover_url" widget="image"/>
+                            </div>
+                            <div class="oe_kanban_details">
+                                <strong class="o_kanban_record_title">
+                                    <field name="name"/>
+                                </strong>
+                                <div class="text-muted">
+                                    by <field name="author"/>
+                                </div>
+                                <div class="mt-2">
+                                    <field name="state" widget="badge"/>
+                                </div>
+                                <div t-if="record.copies_count.raw_value" class="mt-2">
+                                    <field name="copies_count"/> copies
+                                </div>
+                            </div>
+                        </div>
+                    </t>
+                </templates>
+            </kanban>
+        </field>
+    </record>
+
+    <record id="action_book_subtopic" model="ir.actions.act_window">
+        <field name="name">Subtopics</field>
+        <field name="res_model">library.book.subtopic</field>
+        <field name="view_mode">tree,form</field>
+    </record>
+
+    <!-- Menu Items -->
+    <menuitem id="menu_library_root"
+              name="Library"
+              sequence="10"/>
+
+    <menuitem id="menu_library_book"
+              name="Books"
+              parent="menu_library_root"
+              action="action_library_book"
+              sequence="1"/>
+
+    <menuitem id="menu_library_dashboard"
+              name="Dashboard"
+              parent="menu_library_root"
+              action="action_book_dashboard"
+              sequence="2"/>
+    <menuitem id="menu_book_subtopic"
+              name="Subtopics"
+              parent="menu_library_root"
+              action="action_book_subtopic"
+              sequence="3"/>
+</odoo>
+
+# reports/book_report.py
+from odoo import models, api
+
+class BookReport(models.AbstractModel):
+    _name = 'report.library_management.book_report'
+    _description = 'Book Report'
+
+    @api.model
+    def _get_report_values(self, docids, data=None):
+        docs = self.env['library.book'].browse(docids)
+        return {
+            'doc_ids': docids,
+            'doc_model': 'library.book',
+            'docs': docs,
+        }
+
+# reports/book_report_template.xml
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="action_book_report" model="ir.actions.report">
+        <field name="name">Book Report</field>
+        <field name="model">library.book</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">library_management.book_report_template</field>
+        <field name="report_file">library_management.book_report_template</field>
+        <field name="binding_model_id" ref="model_library_book"/>
+        <field name="binding_type">report</field>
+    </record>
+
+    <template id="book_report_template">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <div class="page">
+                    <h2>Books Report</h2>
+
+                    <!-- Lặp qua từng cuốn sách -->
+                    <t t-foreach="docs" t-as="book">
+                        <div class="mt-4" style="page-break-inside: avoid;">
+                            <h3>
+                                <span t-field="book.name"/>
+                            </h3>
+                            <table class="table table-bordered">
+                                <tr>
+                                    <td width="20%"><strong>Author</strong></td>
+                                    <td><span t-field="book.author"/></td>
+                                </tr>
+                                <tr>
+                                    <td><strong>ISBN</strong></td>
+                                    <td><span t-field="book.isbn"/></td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Status</strong></td>
+                                    <td><span t-field="book.state"/></td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Description</strong></td>
+                                    <td><span t-field="book.description"/></td>
+                                </tr>
+                            </table>
+                        </div>
+                        <!-- Thêm ngắt trang giữa các sách -->
+                        <t t-if="not book_last">
+                            <div style="page-break-after: always;"/>
+                        </t>
+                    </t>
+                </div>
+            </t>
+        </t>
+    </template>
+</odoo>
+
+# static/src/vomponents/dashboard/book_dashboard.js
+/** @odoo-module **/
+
+import { registry } from "@web/core/registry";
+import { Layout } from "@web/search/layout";
+import { useService } from "@web/core/utils/hooks";
+import { Component, onWillStart } from "@odoo/owl";
+
+class BookDashboard extends Component {
+    setup() {
+        this.orm = useService("orm");
+        this.action = useService("action");
+        
+        // Khởi tạo giá trị mặc định cho stats
+        this.stats = {
+            total: 0,
+            available: 0,
+            borrowed: 0
+        };
+
+        // Sử dụng onWillStart để load data trước khi component render
+        onWillStart(async () => {
+            await this.loadData();
+        });
+    }
+
+    async loadData() {
+        try {
+            const domain = [];
+            const fields = ["name", "state"];
+            const books = await this.orm.searchRead("library.book", domain, fields);
+
+            this.stats = {
+                total: books.length,
+                available: books.filter(b => b.state === 'available').length,
+                borrowed: books.filter(b => b.state === 'borrowed').length,
+            };
+        } catch (error) {
+            console.error("Error loading data:", error);
+            // Giữ giá trị mặc định nếu có lỗi
+        }
+    }
+
+    openBookList() {
+        this.action.doAction("library_management.action_library_book");
+    }
+}
+
+BookDashboard.components = { Layout };
+BookDashboard.template = "library_management.BookDashboard";
+
+registry.category("actions").add("library_book_dashboard", BookDashboard);
+
+# static/src/vomponents/dashboard/book_dashboard.xml
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="library_management.BookDashboard" owl="1">
+        <Layout>
+            <div class="container p-4">
+                <div class="row">
+                    <div class="col-lg-4 mb-4">
+                        <div class="card h-100">
+                            <div class="card-body text-center">
+                                <h5 class="card-title">Total Books</h5>
+                                <div class="display-4">
+                                    <t t-esc="stats.total"/>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-lg-4 mb-4">
+                        <div class="card h-100">
+                            <div class="card-body text-center">
+                                <h5 class="card-title">Available Books</h5>
+                                <div class="display-4 text-success">
+                                    <t t-esc="stats.available"/>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-lg-4 mb-4">
+                        <div class="card h-100">
+                            <div class="card-body text-center">
+                                <h5 class="card-title">Borrowed Books</h5>
+                                <div class="display-4 text-warning">
+                                    <t t-esc="stats.borrowed"/>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="row mt-4">
+                    <div class="col-12 text-center">
+                        <button class="btn btn-primary" t-on-click="openBookList">
+                            View All Books
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </Layout>
+    </t>
+</templates>
+
+# models/history.py
+from odoo import models, fields, api
+from odoo.exceptions import UserError
+from odoo.exceptions import ValidationError
+
+class BookHistory(models.Model):
+    _name = 'library.book.history'
+    book_id = fields.Many2one('library.book')
+    borrow_date = fields.Date()
+    return_date = fields.Date()
+    borrower_id = fields.Many2one('res.partner')
+    state = fields.Selection([
+        ('borrowed', 'Borrowed'),
+        ('returned', 'Returned'),
+        ('overdue', 'Overdue'),
+        ('lost', 'Lost')
+    ])
+
+# models/tags.py
+from odoo import models, fields, api
+from odoo.exceptions import UserError
+from odoo.exceptions import ValidationError
+
+class BookTag(models.Model):
+    _name = 'library.book.tag'
+    name = fields.Char()
+    color = fields.Integer()
+
+#models/subtopic.py
+from odoo import models, fields, api
+from odoo.exceptions import ValidationError
+
+
+class BookSubtopic(models.Model):
+    _name = 'library.book.subtopic'
+    _description = 'Book Subtopic'
+    _parent_store = True
+    _parent_name = "parent_id"
+    _rec_name = 'complete_name'
+    _order = 'sequence, id'
+
+    name = fields.Char('Name', required=True)
+    complete_name = fields.Char('Complete Name', compute='_compute_complete_name', store=True)
+    book_id = fields.Many2one('library.book', string='Book', required=True, ondelete='cascade')
+    parent_id = fields.Many2one(
+        'library.book.subtopic',
+        string='Parent Subtopic',
+        ondelete='cascade',
+        domain="[('book_id', '=', book_id)]"
+    )
+    child_ids = fields.One2many('library.book.subtopic', 'parent_id', string='Child Subtopics')
+    parent_path = fields.Char(index=True)
+    sequence = fields.Integer('Sequence', default=10)
+
+    content = fields.Html('Content')
+    is_folder = fields.Boolean('Is Folder', default=False)
+    icon = fields.Char('Icon', default='fa-book')
+    color = fields.Integer('Color Index')
+
+    # Đếm số lượng subtopic con
+    child_count = fields.Integer(
+        'Number of Child Subtopics',
+        compute='_compute_child_count',
+        store=True
+    )
+
+    @api.depends('name', 'parent_id.complete_name')
+    def _compute_complete_name(self):
+        for subtopic in self:
+            if subtopic.parent_id:
+                subtopic.complete_name = f'{subtopic.parent_id.complete_name} / {subtopic.name}'
+            else:
+                subtopic.complete_name = subtopic.name
+
+    @api.depends('child_ids')
+    def _compute_child_count(self):
+        for record in self:
+            record.child_count = len(record.child_ids)
+
+    @api.constrains('parent_id')
+    def _check_parent_id(self):
+        for record in self:
+            if record.parent_id and record.parent_id.book_id != record.book_id:
+                raise ValidationError("Parent subtopic must belong to the same book")
+
+    def name_get(self):
+        result = []
+        for record in self:
+            result.append((record.id, record.complete_name))
+        return result
+
+    def toggle_is_folder(self):
+        """Toggle is_folder status"""
+        for record in self:
+            record.is_folder = not record.is_folder
+        return True
+
+    @api.constrains('is_folder', 'content', 'child_ids')
+    def _check_folder_constraints(self):
+        for record in self:
+            if record.is_folder and record.content:
+                raise ValidationError("Folder type subtopics cannot have content")
+            if not record.is_folder and record.child_ids:
+                raise ValidationError("Content type subtopics cannot have children")
+
+#views/subtopic_views.xml
+
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Form View -->
+    <record id="view_book_subtopic_form" model="ir.ui.view">
+        <field name="name">library.book.subtopic.form</field>
+        <field name="model">library.book.subtopic</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="toggle_is_folder"
+                                type="object"
+                                class="oe_stat_button"
+                                icon="fa-folder">
+                            <field name="is_folder" widget="boolean_button"/>
+                        </button>
+                    </div>
+                    <div class="oe_title">
+                        <label for="name" class="oe_edit_only"/>
+                        <h1><field name="name" placeholder="Subtopic Name"/></h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="book_id"/>
+                            <field name="parent_id"/>
+                            <field name="sequence"/>
+                        </group>
+                        <group>
+                            <field name="icon"/>
+                            <field name="color" widget="color_picker"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Content" name="content">
+                            <field name="content" widget="html"/>
+                        </page>
+                        <page string="Child Subtopics" name="child_subtopics">
+                            <field name="child_ids">
+                                <tree>
+                                    <field name="sequence" widget="handle"/>
+                                    <field name="name"/>
+                                    <field name="is_folder"/>
+                                    <field name="child_count"/>
+                                </tree>
+                            </field>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- Tree View -->
+    <record id="view_book_subtopic_tree" model="ir.ui.view">
+        <field name="name">library.book.subtopic.tree</field>
+        <field name="model">library.book.subtopic</field>
+        <field name="arch" type="xml">
+            <tree>
+                <field name="sequence" widget="handle"/>
+                <field name="complete_name"/>
+                <field name="book_id"/>
+                <field name="is_folder"/>
+                <field name="child_count"/>
+            </tree>
+        </field>
+    </record>
+
+    <!-- Search View -->
+    <record id="view_book_subtopic_search" model="ir.ui.view">
+        <field name="name">library.book.subtopic.search</field>
+        <field name="model">library.book.subtopic</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="name"/>
+                <field name="book_id"/>
+                <field name="parent_id"/>
+                <filter string="Folders" name="folders" domain="[('is_folder', '=', True)]"/>
+                <filter string="Content" name="content" domain="[('is_folder', '=', False)]"/>
+                <group expand="0" string="Group By">
+                    <filter string="Book" name="group_by_book" context="{'group_by': 'book_id'}"/>
+                    <filter string="Parent Subtopic" name="group_by_parent" context="{'group_by': 'parent_id'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+</odoo>
+
+
+
+
+
+.env
+[options]
+addons_path = addons,my_addons
+db_host = localhost
+db_password = odoo
+db_user = odoo
+db_port = 5432
+xmlrpc_port = 6200
+xmlrpc_interface = 0.0.0.0
+api_key_ki_so = 0
+url_ki_so = https://ncdev-01.aisenote.com/signing/sign-document/qlvb/
+limit_time_cpu = 60000
+limit_time_real = 120000
+admin_passwd = $pbkdf2-sha512$600000$3psTImRMqdU6Z4wRQmhtTQ$23QUi442eH42BiXZj5bepAl9.YB4uLSrssg2fcIyUeRM7QB2TPAX3m9gkai5sN4b9rSgOuniuBbr1LkgyHNMOw
+
+report.url = http://localhost:6200
+web.base.url = http://localhost:6200
+wkhtmltopdf_path = /usr/bin/wkhtmltopdf
+
+
+
+
+
+
+
+
+
+Tôi đã tạo một module quản lý thư viện đơn giản với đầy đủ 5 loại action như sau:
+
+Window Action (ir.actions.act_window):
+
+
+action_library_book: Hiển thị danh sách sách với các view tree, form, và kanban
+Được gắn vào menu item chính
+
+
+Server Action (ir.actions.server):
+
+
+action_mark_all_available: Action để đánh dấu tất cả sách là "Available"
+Có thể chạy từ context menu trong list view
+
+
+URL Action (ir.actions.act_url):
+
+
+action_open_website: Mở trang Goodreads của sách dựa trên ISBN
+Được thêm như một button trong form view
+
+
+Client Action (ir.actions.client):
+
+
+action_book_dashboard: Dashboard tùy chỉnh hiển thị thống kê về sách
+Sử dụng OWL Component để tạo giao diện
+
+
+Report Action (ir.actions.report):
+
+
+action_book_report: Xuất báo cáo PDF chi tiết về sách
+Sử dụng QWeb template để định dạng báo cáo
+
+
+
+Vâng, tôi hiểu về Actions trong Odoo 17. Actions trong Odoo là các hành động được định nghĩa để thực hiện một tác vụ cụ thể khi người dùng tương tác với hệ thống.
+Trong Settings/Technical/Actions, có các loại action chính:
+
+Window Actions (ir.actions.act_window):
+
+
+Dùng để mở form, list, kanban view
+Định nghĩa view mode, domain, context
+Thường dùng cho menu items và button actions
+
+
+Server Actions (ir.actions.server):
+
+
+Thực thi code Python trên server
+Có thể tạo/cập nhật/xóa records
+Thực hiện các tác vụ phức tạp
+Có thể kết hợp với automated actions
+
+
+URL Actions (ir.actions.act_url):
+
+
+Mở URL hoặc link external
+Có thể mở trong tab mới hoặc cùng tab
+
+
+Client Actions (ir.actions.client):
+
+
+Thực thi code JavaScript ở client side
+Tạo các widget/view tùy chỉnh
+
+
+Report Actions (ir.actions.report):
+
+
+Xuất báo cáo PDF, Excel,...
+Định nghĩa template và data cho report
+
+
+Window Actions (ir.actions.act_window):
+
+
+Đây là action phổ biến nhất, khi bạn click vào menu "Books" nó sẽ mở ra danh sách sách
+Bạn có thể:
+
+Xem dạng list (tree view)
+Xem dạng card (kanban view)
+Click vào 1 record để xem chi tiết (form view)
+
+
+
+
+Server Actions (ir.actions.server):
+
+
+Dùng để thực hiện hành động hàng loạt
+Cách dùng:
+
+Chọn nhiều records trong list view
+Click vào nút "Action" ở góc trên
+Chọn "Mark All as Available"
+Tất cả sách được chọn sẽ chuyển sang trạng thái Available
+
+
+
+
+URL Actions (ir.actions.act_url):
+
+
+Dùng để mở link external
+Trong module này:
+
+Vào form view của 1 cuốn sách
+Click nút "View on Goodreads"
+Nó sẽ mở tab mới tới trang Goodreads tìm kiếm theo ISBN
+
+
+
+
+Client Actions (ir.actions.client):
+
+
+Dùng để hiển thị giao diện tùy chỉnh (custom UI)
+Trong module này:
+
+Click vào menu "Dashboard"
+Hiển thị dashboard với thống kê:
+
+Tổng số sách
+Số sách có sẵn
+Số sách đang được mượn
+
+
+Có nút để chuyển sang xem danh sách sách
+
+
+
+
+Report Actions (ir.actions.report):
+
+
+Dùng để xuất báo cáo
+Cách dùng:
+
+Vào form view của 1 cuốn sách
+Click vào nút "Print" hoặc icon máy in
+Chọn "Book Report"
+File PDF sẽ được tải về với thông tin chi tiết sách
+
+
+Các constraints mới được thêm vào:
+
+ISBN Length Constraint:
+
+Kiểm tra độ dài ISBN phải đúng 13 chữ số
+Bỏ qua các dấu gạch ngang
+
+
+Unique ISBN Constraint:
+
+Ngăn trùng lặp ISBN giữa các sách
+Kiểm tra cả khi tạo mới và cập nhật
+
+
+Book Name Length Constraint:
+
+Đảm bảo tên sách có ít nhất 3 ký tự
+Loại bỏ khoảng trắng thừa
+
+
+SQL Unique Constraint:
+
+Thêm ràng buộc SQL để đảm bảo tính duy nhất của ISBN ở mức cơ sở dữ liệu
+
+
+Borrowed/Available State Validation:
+
+Nâng cấp các phương thức action_mark_borrowed và action_mark_available với validation chi tiết
+
+
+Website Opening Constraint:
+
+Chỉ cho phép mở trang web tra cứu khi sách có ISBN
+
+
+
+Những constraints này sẽ:
+
+Tăng tính toàn vẹn dữ liệu
+Ngăn chặn nhập liệu không hợp lệ
+Cải thiện trải nghiệm người dùng
+
+
+Với module quản lý thư viện này, tính năng "Add The Sprinkles" được thể hiện ở nhiều vị trí. Tôi sẽ phân tích chi tiết:
+
+Form View (view_library_book_form):
+
+
+Loading Skeleton khi mở form
+Hiệu ứng hover trên các nút trong header (Mark as Borrowed, Mark as Available)
+Animation khi toggle button box (nút Archive)
+Hiệu ứng hover trên các tab (Description, History)
+Hiệu ứng chuyển đổi khi mở/đóng chatter
+Hiệu ứng khi upload ảnh bìa sách (cover_url widget="image")
+Micro-interaction khi chọn tags (widget="many2many_tags")
+
+
+Kanban View (view_library_book_kanban):
+
+
+Loading skeleton khi tải dữ liệu
+Animation khi kéo thả cards giữa các cột trạng thái
+Hiệu ứng hover trên cards
+Hiệu ứng màu (color field) trên cards
+Smooth transitions khi thay đổi nhóm hoặc lọc
+
+
+Tree View (view_library_book_tree):
+
+
+Loading skeleton khi tải danh sách
+Hiệu ứng hover trên các dòng
+Animation khi sắp xếp cột
+Transitions khi thêm/xóa records
+
+
+Dashboard (book_dashboard.js và book_dashboard.xml):
+
+
+Loading states khi tải số liệu thống kê
+Hover effects trên cards hiển thị số liệu
+Animation khi cập nhật số liệu
+Transition effects khi nhấn nút "View All Books"
+
+
+Button và Actions:
+
+
+Ripple effect khi nhấn các nút
+Loading indicator khi thực hiện actions
+Feedback animations khi hoàn thành actions
+Transition effects khi chuyển đổi states
+
+
+Chatter:
+
+
+Smooth animations khi mở rộng/thu gọn
+Loading states khi tải messages
+Hover effects trên attachments
+Transition khi thêm followers
+
+
+Report Template:
+
+
+Smooth loading khi xuất PDF
+Transition effects giữa các trang
+Animation khi tải ảnh bìa sách
+
+
+Tổng quan:
+
+
+Consistent loading states
+Smooth transitions giữa các views
+Responsive animations
+Visual feedbacks cho user actions
+Micro-interactions trong toàn bộ module
+
+
+Dựa vào code bạn chia sẻ, tôi thấy module của bạn đã có tính năng Subtopic và được thể hiện ở các điểm sau:
+
+Model Structure:
+
+pythonCopy# models/subtopic.py
+class BookSubtopic(models.Model):
+    _name = 'library.book.subtopic'
+    _parent_store = True
+    _parent_name = "parent_id"
+    _rec_name = 'complete_name'
+
+Định nghĩa model subtopic riêng biệt
+Hỗ trợ cấu trúc phân cấp (_parent_store = True)
+Sử dụng complete_name để hiển thị tên đầy đủ bao gồm cả cấp cha
+
+
+Quan hệ với Book:
+
+pythonCopy# models/library.py
+class Book(models.Model):
+    subtopic_ids = fields.One2many(
+        'library.book.subtopic', 
+        'book_id',
+        string='Subtopics'
+    )
+    subtopic_count = fields.Integer(
+        'Number of Subtopics',
+        compute='_compute_subtopic_count'
+    )
+
+Mỗi sách có thể có nhiều subtopic
+Có counter để đếm số lượng subtopic
+
+
+Tính năng chính của Subtopic:
+
+
+Cấu trúc phân cấp:
+
+pythonCopyparent_id = fields.Many2one('library.book.subtopic')
+child_ids = fields.One2many('library.book.subtopic', 'parent_id')
+
+Phân loại nội dung:
+
+pythonCopyis_folder = fields.Boolean('Is Folder', default=False)
+content = fields.Html('Content')
+
+Custom hiển thị:
+
+pythonCopyicon = fields.Char('Icon', default='fa-book')
+color = fields.Integer('Color Index')
+sequence = fields.Integer('Sequence', default=10)
+
+View Integration:
+
+
+Form view hiển thị nội dung subtopic
+Tree view hiển thị cấu trúc phân cấp
+Search view cho phép filter và group
+Button box để toggle folder/content
+
+
+Tác dụng chính:
+
+
+Tổ chức nội dung sách theo cấu trúc phân cấp
+Phân loại nội dung thành folders và content
+Dễ dàng sắp xếp và quản lý thông tin chi tiết của sách
+Tích hợp HTML editor cho nội dung phong phú
+Hỗ trợ drag & drop để sắp xếp thứ tự
+
+
+Dựa vào code của bạn, tôi thấy có 3 loại Inheritance đã được sử dụng:
+
+Class Inheritance (python inheritance):
+
+pythonCopy# Trong models/library.py
+class Book(models.Model):
+    _name = 'library.book'
+    _inherit = ['mail.thread', 'mail.activity.mixin']
+
+Luồng: Book model kế thừa các tính năng từ mail.thread và mail.activity.mixin
+Mục đích: Thêm chức năng chatter và activity vào Book model
+
+
+Prototype Inheritance:
+
+pythonCopy# Trong models/ebook.py
+class Ebook(models.Model):
+    _name = 'library.ebook'
+    _inherits = {'library.book': 'book_id'}
+
+Luồng: Ebook model kế thừa toàn bộ fields từ library.book thông qua field book_id
+Mục đích: Tạo Ebook model mở rộng từ Book model, thêm các fields mới như file_url, file_size, format
+
+
+View Inheritance:
+
+xmlCopy# Trong views/book_search_view.xml
+<record id="view_library_book_search_inherit" model="ir.ui.view">
+    <field name="inherit_id" ref="library_management.view_library_book_search"/>
+    <field name="arch" type="xml">
+        <search>
+            <field name="isbn"/>
+            <filter name="available" string="Available"/>
+            ...
+        </search>
+    </field>
+</record>
+
+Luồng: View mới kế thừa và mở rộng từ view gốc library_management.view_library_book_search
+Mục đích: Thêm trường tìm kiếm isbn và các filter vào search view
+
+Như vậy module của bạn đã sử dụng đủ 3 kiểu inheritance chính trong Odoo.
